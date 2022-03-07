@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html>
+    <head>
+        <meta charset="utf-8">
+        <title>HC v3.0</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <script src="https://code.jquery.com/jquery-3.6.0.min.js" integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4=" crossorigin="anonymous"></script>
+        <script type="text/javascript" language="javascript" src="dzicrypto-1.0.1.js"></script>
+        <style>
+
+body {
+	background-color: #e8e8e8;
+	font: 14px/1.2em "Open Sans","Helvetica Neue",Helvetica,Arial,sans-serif;
+}
+
+fieldset {
+	border: 0;
+	outline: 0;
+}
+
+table {
+	width: 100%;
+}
+
+table th, table td {
+	line-height: 1.6em;
+	text-align: left;
+}
+
+tbody td {
+    font-family: 'Courier New', Courier, monospace;
+    height: 32px;
+}
+
+.top-line {
+	width: 100%;
+	background-color: #fff;
+	box-shadow: 0 0 20px #cdcdcd;
+    padding: 10px 0 0 10px;
+	float: left;
+	width: 100%;
+	clear: both;
+	line-height: 1em;
+    top: 0;
+    left: 0;
+    position: fixed;
+}
+
+.top-line fieldset {
+	float: left;
+	clear: right; 
+    margin-top: 10px;
+	margin-bottom: 10px;
+}
+
+.top-line fieldset button {
+	width: 140px;
+    margin-left: 10px;
+}
+
+.top-line fieldset select {
+    min-width: 140px;
+}
+
+.top-line fieldset label {
+    margin-left: 10px;
+}
+
+.content {
+	border-radius: 10px;
+	-moz-border-radius: 10px;
+	-webkit-border-radius: 10px;
+	-o-border-radius: 10px;
+	background: #fff right 16px no-repeat;
+	box-shadow: 0 0 10px #cdcdcd;	
+    padding: 10px 32px;
+	clear: both;
+	margin: 0 auto 20px;
+}
+
+        </style>
+      </head>
+    <body>
+        <div class="top-line">
+            <div class="wrapper">
+                <fieldset class="ui-panel">
+                    <input id="add-file-input" type="file" multiple/>
+                    <button id="add-file-button" onclick="$('#add-file-input').click()">Додати...</button>
+                    <button id="clear-button" disabled>Очистити</button>
+                    <label>Алгоритм</label>
+                    <select id="digest-alg"></select>
+                    <label for="digest-format">формат</label>
+                    <select id="digest-format">
+                        <option value="bytes" selected>Послідовність байт</option>
+                        <option value="solid">Послідовність</option>
+                        <option value="as-gost34311">Згідно ГОСТ 34311</option>
+                    </select>                            
+                    <button id="copy-button" onclick="copyTable()" disabled>Скопіювати</button>
+                </fieldset>   
+            </div>
+        </div>
+        <div style="height: 80px; width: 100%;"></div>
+        <div class="content" id="dropzone">
+            <table id="files-table">
+                <tbody id="files-table-tbody">
+                    <tr>
+                        <th>Назва</th>
+                        <th>Геш-вектор</th>
+                        <th>&nbsp;</th>
+                    </tr>
+                    <tr>
+                        <th colspan="3"><hr></th>
+                    </tr>
+                </tbody>
+            </table>
+            <br>
+        </div>
+
+        <script>
+			if (!window.File || !window.FileReader) {
+				alert("Ваш браузер не підтримує роботу з файлами");
+			}  
+			if (!Uint8Array.prototype.slice) {
+                Uint8Array.prototype.slice = function(a, b) {
+                    var uint8ArraySlice = new Uint8Array(this.buffer.slice(a, b));
+                    return uint8ArraySlice;
+                }
+            }
+
+            var fileItems = [];
+            var fileUID = 0;
+            var digestCalcs = []
+            var digestAlgs = [];
+            
+            $(document).ready(function() {
+
+				$("#add-file-input").change(function() {
+                     $.each(this.files, function (i, v) { addFile(v); });
+				}).hide();
+
+                if (!window.navigator || !window.navigator.clipboard) {
+                    $("#copy-button").hide();
+                }
+
+                $("#digest-alg").change(function() { 
+                    var format = digestAlgs[$(this).val()].format;
+                    if ($("#digest-format").val() !== format) {
+                        $("#digest-format").val(format);
+                    }
+                    $.each(digestCalcs, function(i, dc) { dc.calc(); }); 
+                    updateCopyButton();
+                });
+
+                function addOption(alg, name, format, selected) {
+                    digestAlgs[alg] = {name: name, format: format};
+                    var option = $("<option>").attr("value", alg).text(name);
+                    $("#digest-alg").append(option);
+                    if (selected) {
+                        option.attr("selected", true);
+                    }
+                }
+                addOption(DziCryptoApi.MD_GOST34311_DKE1, "ГОСТ34311 ДКЕ №1", "as-gost34311");
+                addOption(DziCryptoApi.MD_DSTU7564_256, "Купина-256", "bytes");
+                addOption(DziCryptoApi.MD_DSTU7564_512, "Купина-512", "bytes");
+                addOption(DziCryptoApi.MD_SHA1, "SHA-1", "bytes");
+                addOption(DziCryptoApi.MD_SHA256, "SHA-256", "bytes");
+                addOption(DziCryptoApi.MD_SHA512, "SHA-512", "bytes");
+                $("#digest-alg").val(DziCryptoApi.MD_GOST34311_DKE1).change();
+
+                $("#digest-format").change(function() { 
+                    var alg = $("#digest-alg").val();
+                    $.each(digestCalcs, function(i, dc) { dc.setMessage(printableDigest(dc.digests[alg])); });
+                });
+
+                $("#clear-button").click(function() {
+                    while (fileItems.length) {
+                        deleteFile(fileItems[0].id);
+                    }
+                });
+
+                var blockEvent = function(e) {
+                    e.stopPropagation();
+                    e.preventDefault();
+                };
+                $('#dropzone')
+                    .on("dragover", blockEvent)
+                    .on("dragenter", blockEvent)
+                    .on("drop", function(e) { 
+                        blockEvent(e);
+						$.each(e.originalEvent.dataTransfer.files, function(i, f) { addFile(f); });
+                    });
+            });
+
+            function exec(res) {
+                var lastError = DziCryptoApi.getLastError();
+                var code = lastError.getCode();
+                if (code === 0) {
+                    return res;
+                } else {
+                    var msg = "DziCryptoApi error " + code + " with message: '" + lastError.getMessage() + "'";
+                    console.error(msg);
+                    lastError.reset();
+                    throw new Error(msg);
+                }
+            }
+
+            function DigestCalculator(fileItem, data) {
+                this.name = fileItem.file.name;
+                this.data = data;
+                this.items = [fileItem];
+                this.digests = [];
+                this.message = "";
+
+                fileItem.digestCalc = this;
+
+                this.addFile = function(fi, data) {
+                    if (this.name === fi.file.name && utils.areEquals(this.data, data)) {
+                        this.items.push(fi);
+                        fi.digestCalc = this;
+                        $("td[id='" + fi.id + "-digest']").html(this.message);
+                        return true;
+                    } else {
+                        return false;
+                    }
+                };
+
+                this.removeFile = function(fi) { return utils.removeItem(this.items, fi); };
+
+                this.setMessage = function(s) {
+                    this.message = s;
+                    $.each(this.items, function(i, fi) { $("td[id='" + fi.id + "-digest']").html(s); });
+                };
+
+                this.calc = function() {
+                    var algType = $("#digest-alg").val();
+                    if (this.digests[algType]) {
+                        this.setMessage(printableDigest(this.digests[algType]));
+                    } else {
+                        this.setMessage("");
+                        updateCopyButton(true);
+                        var alg = exec(DziCryptoApi.createMessageDigest(algType));
+                        var CHUNK_LEN = 32 * 1024;
+                        var scope = this;
+                        var len = scope.data.length;
+                        function nextBlock(pos) {
+                            if (algType !== $("#digest-alg").val()) {
+                                return;
+                            }
+                            if (scope.items.length === 0) {
+                                return;
+                            }
+                            var rest = scope.data.length - pos;
+                            var bufSize = rest > CHUNK_LEN ? CHUNK_LEN : rest;
+                            var buf = scope.data.slice(pos, pos + bufSize);
+                            exec(alg.update(utils.toBase64(buf)));
+                            pos += bufSize;
+                            if (pos < scope.data.length) {
+                                scope.setMessage("<small>" + (Math.round(100 * pos / scope.data.length)) + " &percnt;</small>");
+                                setTimeout(function() { nextBlock(pos); }, 0);
+                            } else {
+                                var digest = utils.fromBase64(exec(alg.digest()));
+                                scope.digests[algType] = digest;
+                                scope.setMessage(printableDigest(digest));
+                                updateCopyButton();
+                            }
+                        };
+                        nextBlock(0);
+                    }
+                };
+            }
+
+            function printableDigest(digest) {
+                if (!digest) return '';
+                switch($("#digest-format").val()) {
+                    case "as-gost34311": return utils.toHexAsGost34331(digest);
+                    case "bytes": return utils.toHexBytes(digest, ' ');
+                    default: return utils.toHexBytes(digest);
+                }
+            }
+
+            function addFile(file) {
+                var reader = new FileReader();
+				reader.onloadend = function(ev) {
+                    var data = new Uint8Array(ev.target.result);                    
+                    if (data.length != file.size) {
+                        window.alert("Помилка читання файлу " + file.name);
+                        return;
+                    }
+                    var fileItem = {file: file, id: ++fileUID};
+                    fileItems.push(fileItem);
+                    var tr = $("<tr>", {id: fileItem.id}).appendTo("#files-table-tbody");
+                    $("<td>", {id: "" + fileItem.id + "-name"}).html(fileItem.file.name).appendTo(tr);
+                    $("<td>", {id: "" + fileItem.id + "-digest"}).appendTo(tr);
+                    var delBtn = $("<button>", {id: "del-" + fileItem.id}).html("&#x2421;")
+                        .click(function() { deleteFile(fileItem.id); })
+                        .hide();
+                    $("<td>").css("width", "32px").append(delBtn).appendTo(tr);
+                    tr.hover(function() {
+                        $(this).css("background-color", "#f0f0f0");
+                        delBtn.show();
+                    }, function() {
+                        $(this).css("background-color", "");
+                        delBtn.hide();
+                    });
+				    var digestCalc;
+                    $.each(digestCalcs, function(i, dc) {
+                        if (dc.addFile(fileItem, data)) {
+                            digestCalc = dc;
+                            return false;
+                        }
+                    });
+                    if (!digestCalc) {
+                        digestCalc = new DigestCalculator(fileItem, data);
+                        digestCalcs.push(digestCalc);
+                        digestCalc.calc();
+                    }
+                    updateClearButton();
+				};
+				reader.readAsArrayBuffer(file);
+            }
+
+            function deleteFile(id) {
+                for (var i = 0; i < fileItems.length; i++) {
+                    var fi = fileItems[i];
+                    if (fi.id === id) {
+                        fi.digestCalc.removeFile(fi);
+                        if (fi.digestCalc.items.length == 0) {
+                            utils.removeItem(digestCalcs, fi.digestCalc);
+                        }
+                        $("tr[id='" + id + "']").remove();
+						fileItems.splice(i, 1);
+                        updateClearButton();
+                        updateCopyButton();
+                        return true;
+                    }
+                }
+                return false;
+            }
+            
+            function isTableReady() {
+                if (window.navigator && window.navigator.clipboard && fileItems.length) {
+                    var alg = $("#digest-alg").val();
+                    var res = true;
+                    $.each(fileItems, function(i, fi) {
+                        if (!fi.digestCalc.digests[alg]) {
+                            res = false;
+                            return false;
+                        }
+                    });
+                    return res;
+                } else {
+                    return false;
+                }
+            }
+
+            function updateClearButton() { $("#clear-button").prop("disabled", !fileItems.length); }
+
+            function updateCopyButton(disable) { $("#copy-button").prop("disabled", disable || !isTableReady()); }
+
+            function copyTable() {
+                if (isTableReady()) {
+                    var alg = $("#digest-alg").val();
+                    var text = "";
+                    $.each(fileItems, function(i, fi) { text += fi.file.name + "\t" + printableDigest(fi.digestCalc.digests[alg]) + "\n"; });
+                    navigator.clipboard.writeText(text);
+                    window.alert("До буферу обміну скопійовано " + fileItems.length + " записів");
+                }
+            }
+
+            var utils = (function() {
+                var hex = "0123456789ABCDEF";
+                function toHexByte(b) {
+                    return hex[(b >> 4)] + hex[b & 0xF];
+                }
+                return {
+                    toHexBytes: function(u8a, sep) {
+                        var str = "";
+                        for (var i = 0; i < u8a.length; i++) {
+                            str += toHexByte(u8a[i]) + (sep ? sep : '');
+                        }
+                        return str;
+                    },
+                    toHexAsGost34331: function(u8a) {
+                        var str = "";
+                        for (var i = u8a.length - 1; i >= 0; i--) {
+                            str += toHexByte(u8a[i]);
+                            if (i % 4 === 0) str += ' ';
+                        }
+                        return str;
+                    }, 
+                    toBase64: function(u8a) { 
+                        return btoa(String.fromCharCode.apply(null, u8a)); 
+                    },
+                    fromBase64: function(str) { 
+                        return new Uint8Array(atob(str).split('').map(function (c) { return c.charCodeAt(0); })); 
+                    },
+                    areEquals: function(a, b) {
+                        if (a === b) {
+                            return true;
+                        }
+                        if (!a || !b) {
+                            return false;
+                        }
+                        if (a.byteLength !== b.byteLength) {
+                            return false;
+                        }
+                        var i = a.byteLength;
+                        while (i--) {
+                            if (a[i] !== b[i]) {
+                                return false;
+                            }
+                        }
+                        return true;
+                    },
+                    removeItem: function(items, item) {
+                        for (var i = 0; i < items.length; i++) {
+                            if (items[i] === item) {
+                                items.splice(i, 1);
+                                return true;
+                            }
+                        }
+                        return false;
+                    }
+                }
+            })();
+
+        </script>
+    </body>
+</html>
